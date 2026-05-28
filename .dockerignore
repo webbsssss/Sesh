@@ -1,0 +1,21 @@
+# Git
+.git
+.gitignore
+
+# Go build artifacts
+*.exe
+*.test
+*.out
+vendor/
+
+# IDE
+.vscode
+.idea
+
+# OS
+.DS_Store
+
+# Documentation
+docs/
+scripts/
+*.md

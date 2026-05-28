@@ -1,0 +1,130 @@
+name: CI/CD
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'helm-charts/**'
+      - 'istio/**'
+  pull_request:
+    branches: [main]
+    paths:
+      - 'apps/**'
+      - 'helm-charts/**'
+      - 'istio/**'
+
+env:
+  AWS_REGION: us-east-1
+  ECR_REPO: payments-api
+  CLUSTER_NAME: platform-dev
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+
+      - name: Build Go binary
+        working-directory: apps/payments-api
+        run: go build -o payments-api ./cmd/payments-api
+
+      - name: Run Go tests
+        working-directory: apps/payments-api
+        run: go test ./... -v
+
+  container-build:
+    needs: build-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build, tag, and push image to ECR
+        working-directory: apps/payments-api
+        env:
+          ECR_REGISTRY: ${{ steps.login-ecr.outputs.registry }}
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          docker build -t $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG \
+                       -t $ECR_REGISTRY/$ECR_REPO:latest \
+                       -f Dockerfile .
+          docker push $ECR_REGISTRY/$ECR_REPO:$IMAGE_TAG
+          docker push $ECR_REGISTRY/$ECR_REPO:latest
+
+  validate-manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Helm
+        uses: azure/setup-helm@v4
+        with:
+          version: '3.14.0'
+
+      - name: Lint Helm chart
+        working-directory: helm-charts/microservice
+        run: helm lint .
+
+      - name: Validate Istio manifests (kubeval / helm template)
+        run: |
+          helm template helm-charts/microservice \
+            --set image.repository=example.com/test \
+            --set image.tag=test > /tmp/rendered.yaml
+          # kubeval or similar can be added here for stricter schema validation
+
+  deploy:
+    needs: [container-build, validate-manifests]
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      id-token: write
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Update kubeconfig
+        run: |
+          aws eks update-kubeconfig --region ${{ env.AWS_REGION }} --name ${{ env.CLUSTER_NAME }}
+
+      - name: Update image tag in Helm values
+        working-directory: helm-charts/microservice
+        env:
+          IMAGE_TAG: ${{ github.sha }}
+        run: |
+          yq e -i ".image.tag = \"$IMAGE_TAG\"" values.yaml
+
+      - name: Commit updated values.yaml
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add helm-charts/microservice/values.yaml
+          git diff --cached --quiet || git commit -m "ci: bump image tag to ${{ github.sha }}"
+          git push

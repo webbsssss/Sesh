@@ -1,0 +1,64 @@
+apiVersion: networking.istio.io/v1beta1
+kind: VirtualService
+metadata:
+  name: payments-api
+  namespace: payments
+spec:
+  hosts:
+    - payments-api
+    - "payments.example.com"
+  gateways:
+    - istio-system/payments-gateway
+    - mesh
+  http:
+    - match:
+        - uri:
+            prefix: /health
+      route:
+        - destination:
+            host: payments-api
+            subset: stable
+          weight: 100
+    - match:
+        - uri:
+            prefix: /ready
+      route:
+        - destination:
+            host: payments-api
+            subset: stable
+          weight: 100
+    - match:
+        - uri:
+            prefix: /version
+      route:
+        - destination:
+            host: payments-api
+            subset: stable
+          weight: 100
+    - name: payment-route
+      match:
+        - uri:
+            prefix: /payment
+      route:
+        - destination:
+            host: payments-api
+            port:
+              number: 8080
+            subset: stable
+          weight: 90
+        - destination:
+            host: payments-api
+            port:
+              number: 8080
+            subset: canary
+          weight: 10
+      retries:
+        attempts: 3
+        perTryTimeout: 2s
+        retryOn: gateway-error,connect-failure,refused-stream
+      timeout: 10s
+      fault:
+        delay:
+          percentage:
+            value: 0.1
+          fixedDelay: 5s

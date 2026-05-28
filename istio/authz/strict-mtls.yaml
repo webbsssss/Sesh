@@ -1,0 +1,28 @@
+apiVersion: security.istio.io/v1beta1
+kind: PeerAuthentication
+metadata:
+  name: default
+  namespace: payments
+spec:
+  mtls:
+    mode: STRICT
+---
+# Optional: Deny all traffic by default, then explicitly allow
+apiVersion: security.istio.io/v1beta1
+kind: AuthorizationPolicy
+metadata:
+  name: payments-api-allow
+  namespace: payments
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: payments-api
+  action: ALLOW
+  rules:
+    - from:
+        - source:
+            namespaces: ["istio-system"]
+      to:
+        - operation:
+            methods: ["GET", "POST"]
+            paths: ["/health", "/ready", "/version", "/payment", "/metrics"]
